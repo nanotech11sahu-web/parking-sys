@@ -37,7 +37,7 @@ export default function AdminLayout() {
         fixed top-0 left-0 h-full z-40 w-64 bg-sidebar-gradient flex flex-col shadow-teal-lg
         transition-transform duration-300 ease-in-out
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
-        lg:relative lg:translate-x-0 lg:flex lg:shrink-0
+        lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 lg:z-auto lg:shrink-0
       `}>
         {/* Logo */}
         <div className="px-6 py-5 border-b border-white/10 flex items-center justify-between">
