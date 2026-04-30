@@ -47,6 +47,7 @@ export const ticketsAPI = {
   create: (data) => api.post('/tickets', data),
   createBatch: (data) => api.post('/tickets/batch', data),
   getAll: (params) => api.get('/tickets', { params }),
+  deleteBatches: (data) => api.delete('/tickets/batch', { data }),
 };
 
 export const membershipTypesAPI = {
