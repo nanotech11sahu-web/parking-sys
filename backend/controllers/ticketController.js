@@ -176,3 +176,27 @@ exports.getBatchSummary = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
+exports.deleteBatchTickets = async (req, res) => {
+  try {
+    const { batches } = req.body;
+    // batches = [{ batchId, parchiTypeId }, ...]
+ 
+    if (!batches || !Array.isArray(batches) || batches.length === 0) {
+      return res.status(400).json({ success: false, message: 'batches array is required' });
+    }
+ 
+    let totalDeleted = 0;
+ 
+    for (const { batchId, parchiTypeId } of batches) {
+      if (!batchId || !parchiTypeId) {
+        return res.status(400).json({ success: false, message: 'Each batch entry needs batchId and parchiTypeId' });
+      }
+      const result = await Ticket.deleteMany({ batchId, parchiTypeId });
+      totalDeleted += result.deletedCount;
+    }
+ 
+    res.json({ success: true, message: `${totalDeleted} ticket(s) deleted`, totalDeleted });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};

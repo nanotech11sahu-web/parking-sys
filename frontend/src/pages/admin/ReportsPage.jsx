@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { reportsAPI, membershipsAPI } from '../../services/api';
+import React, { useState, useEffect, useCallback } from 'react';
+import { reportsAPI, membershipsAPI, ticketsAPI } from '../../services/api';
 import toast from 'react-hot-toast';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
@@ -23,6 +23,9 @@ function StatCard({ label, value, sub, color = 'teal' }) {
   );
 }
 
+// Unique key for a batch row (batchId + parchiTypeId combo)
+const rowKey = (row) => `${row._id?.batchId}__${row._id?.parchiTypeId}`;
+
 export default function ReportsPage() {
   const [tab, setTab] = useState('Overview');
   const [dashboard, setDashboard] = useState(null);
@@ -35,6 +38,11 @@ export default function ReportsPage() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [shiftFilter, setShiftFilter] = useState('');
+
+  // ── Multi-select state ──
+  const [selected, setSelected] = useState(new Set()); // Set of rowKey strings
+  const [deleting, setDeleting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const fetchDashboard = async () => {
     try {
@@ -52,14 +60,15 @@ export default function ReportsPage() {
     finally { setLoading(false); }
   };
 
-  const fetchBatch = async () => {
+  const fetchBatch = useCallback(async () => {
     setLoading(true);
+    setSelected(new Set()); // clear selection on reload
     try {
       const res = await reportsAPI.getBatch({ startDate, endDate, shift: shiftFilter });
       setBatchData(res.data.data);
     } catch { toast.error('Failed to load batch report'); }
     finally { setLoading(false); }
-  };
+  }, [startDate, endDate, shiftFilter]);
 
   const fetchDaily = async () => {
     setLoading(true);
@@ -82,6 +91,7 @@ export default function ReportsPage() {
   useEffect(() => { fetchDashboard(); }, []);
 
   useEffect(() => {
+    setSelected(new Set());
     if (tab === 'Shift-wise') fetchShift();
     if (tab === 'Batch Records') fetchBatch();
     if (tab === 'Daily') fetchDaily();
@@ -95,6 +105,55 @@ export default function ReportsPage() {
     if (tab === 'Memberships') fetchMemberships();
   };
 
+  // ── Selection helpers ──
+  const allKeys = batchData.map(rowKey);
+  const allSelected = allKeys.length > 0 && allKeys.every(k => selected.has(k));
+  const someSelected = selected.size > 0;
+
+  const toggleRow = (key) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(allKeys));
+    }
+  };
+
+  // ── Delete selected batches ──
+  const handleDeleteSelected = async () => {
+    setDeleting(true);
+    setConfirmOpen(false);
+    try {
+      // Build payload: array of { batchId, parchiTypeId }
+      const batches = batchData
+        .filter(row => selected.has(rowKey(row)))
+        .map(row => ({
+          batchId: row._id?.batchId,
+          parchiTypeId: row._id?.parchiTypeId,
+        }));
+
+      await ticketsAPI.deleteBatches({ batches });
+      toast.success(`${selected.size} batch(es) deleted successfully`);
+      await fetchBatch();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Delete failed');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // Summary of selected batches
+  const selectedRows = batchData.filter(row => selected.has(rowKey(row)));
+  const selectedTicketCount = selectedRows.reduce((s, r) => s + (r.count || 0), 0);
+  const selectedRevenue = selectedRows.reduce((s, r) => s + (r.revenue || 0), 0);
+
   return (
     <div className="space-y-6 fade-in">
       <div>
@@ -102,7 +161,7 @@ export default function ReportsPage() {
         <p className="text-slate-500 text-sm">Shift-wise, batch, membership & daily analytics</p>
       </div>
 
-      {/* Tab Bar - scrollable on mobile */}
+      {/* Tab Bar */}
       <div className="overflow-x-auto -mx-1 pb-1">
         <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 rounded-2xl p-1 w-fit min-w-full sm:min-w-0">
           {TABS.map(t => (
@@ -262,44 +321,134 @@ export default function ReportsPage() {
 
       {/* ── BATCH RECORDS ── */}
       {tab === 'Batch Records' && (
-        <div className="card p-0 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[600px]">
-              <thead>
-                <tr>
-                  <th className="table-th">Work Date</th>
-                  <th className="table-th">Operator</th>
-                  <th className="table-th">Shift</th>
-                  <th className="table-th">Parchi Type</th>
-                  <th className="table-th">Serial Range</th>
-                  <th className="table-th">Count</th>
-                  <th className="table-th">Revenue</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr><td colSpan={7} className="text-center py-8 text-slate-400">Loading...</td></tr>
-                ) : batchData.length === 0 ? (
-                  <tr><td colSpan={7} className="text-center py-8 text-slate-400">No batch data</td></tr>
-                ) : batchData.map((row, i) => (
-                  <tr key={i} className="hover:bg-slate-50">
-                    <td className="table-td font-mono text-xs">
-                      {row.workDate || new Date(row.date).toISOString().split('T')[0]}
-                    </td>
-                    <td className="table-td font-medium">{row.operatorName}</td>
-                    <td className="table-td">
-                      <span className="flex items-center gap-1 text-sm">
-                        {SHIFT_ICONS[row.shift] || '⏰'} {row.shift}
-                      </span>
-                    </td>
-                    <td className="table-td">{row.parchiTypeName}</td>
-                    <td className="table-td font-mono text-xs">{row.fromSerial} → {row.toSerial}</td>
-                    <td className="table-td font-bold text-teal-700">{row.count}</td>
-                    <td className="table-td font-bold">₹{row.revenue?.toLocaleString('en-IN')}</td>
+        <div className="space-y-3">
+
+          {/* Action bar — appears when rows are selected */}
+          <div className={`flex items-center justify-between gap-4 px-4 py-3 rounded-2xl border transition-all duration-200 ${
+            someSelected
+              ? 'bg-red-50 border-red-200 opacity-100 scale-100'
+              : 'bg-slate-50 border-slate-100 opacity-60'
+          }`}>
+            <div className="flex items-center gap-3">
+              {/* Master checkbox */}
+              <input
+                type="checkbox"
+                checked={allSelected}
+                ref={el => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                onChange={toggleAll}
+                className="w-4 h-4 rounded accent-teal-600 cursor-pointer"
+              />
+              <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                {someSelected
+                  ? `${selected.size} batch${selected.size > 1 ? 'es' : ''} selected · ${selectedTicketCount} tickets · ₹${selectedRevenue.toLocaleString('en-IN')}`
+                  : `${batchData.length} batch record${batchData.length !== 1 ? 's' : ''}`
+                }
+              </span>
+            </div>
+
+            {someSelected && (
+              <button
+                onClick={() => setConfirmOpen(true)}
+                disabled={deleting}
+                className="flex items-center gap-2 bg-red-600 hover:bg-red-700 active:scale-95 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all shadow-sm"
+              >
+                {deleting ? (
+                  <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                ) : (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                )}
+                Delete Selected
+              </button>
+            )}
+          </div>
+
+          {/* Table */}
+          <div className="card p-0 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[700px]">
+                <thead>
+                  <tr>
+                    <th className="table-th w-10">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        onChange={toggleAll}
+                        className="w-4 h-4 rounded accent-teal-600 cursor-pointer"
+                      />
+                    </th>
+                    <th className="table-th">Work Date</th>
+                    <th className="table-th">Shift</th>
+                    <th className="table-th">Operator</th>
+                    <th className="table-th">Parchi Type</th>
+                    <th className="table-th">Serial Range</th>
+                    <th className="table-th">Count</th>
+                    <th className="table-th">Revenue</th>
+                    <th className="table-th">Action</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr><td colSpan={9} className="text-center py-8 text-slate-400">
+                      <div className="flex justify-center"><div className="animate-spin rounded-full h-8 w-8 border-4 border-teal-500 border-t-transparent" /></div>
+                    </td></tr>
+                  ) : batchData.length === 0 ? (
+                    <tr><td colSpan={9} className="text-center py-10 text-slate-400">No batch data found</td></tr>
+                  ) : batchData.map((row, i) => {
+                    const key = rowKey(row);
+                    const isSelected = selected.has(key);
+                    return (
+                      <tr
+                        key={i}
+                        onClick={() => toggleRow(key)}
+                        className={`cursor-pointer transition-colors ${isSelected ? 'bg-red-50 dark:bg-red-900/20' : 'hover:bg-slate-50 dark:hover:bg-slate-700'}`}
+                      >
+                        <td className="table-td" onClick={e => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleRow(key)}
+                            className="w-4 h-4 rounded accent-teal-600 cursor-pointer"
+                          />
+                        </td>
+                        <td className="table-td font-mono text-xs font-bold">
+                          {row.workDate || new Date(row.date).toISOString().split('T')[0]}
+                        </td>
+                        <td className="table-td">
+                          <span className="flex items-center gap-1 text-sm whitespace-nowrap">
+                            {SHIFT_ICONS[row.shift] || '⏰'} {row.shift}
+                          </span>
+                        </td>
+                        <td className="table-td font-medium">{row.operatorName}</td>
+                        <td className="table-td">
+                          <span className="font-semibold text-slate-700 dark:text-slate-200">{row.parchiTypeName}</span>
+                        </td>
+                        <td className="table-td font-mono text-xs text-slate-500">
+                          {row.fromSerial} → {row.toSerial}
+                        </td>
+                        <td className="table-td font-bold text-teal-700 dark:text-teal-400">{row.count}</td>
+                        <td className="table-td font-bold">₹{row.revenue?.toLocaleString('en-IN')}</td>
+                        <td className="table-td" onClick={e => e.stopPropagation()}>
+                          <button
+                            onClick={() => {
+                              setSelected(new Set([key]));
+                              setConfirmOpen(true);
+                            }}
+                            className="flex items-center gap-1 text-red-500 hover:text-red-700 hover:bg-red-50 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -387,6 +536,59 @@ export default function ReportsPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── CONFIRM DELETE MODAL ── */}
+      {confirmOpen && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-sm p-6 scale-in">
+            <div className="flex items-center justify-center w-14 h-14 bg-red-100 rounded-2xl mx-auto mb-4">
+              <svg className="w-7 h-7 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-bold text-slate-800 dark:text-white text-center mb-1">Delete Batch Records?</h3>
+            <p className="text-sm text-slate-500 text-center mb-4">
+              This will permanently delete{' '}
+              <span className="font-bold text-red-600">{selected.size} batch{selected.size > 1 ? 'es' : ''}</span>{' '}
+              containing{' '}
+              <span className="font-bold text-red-600">{selectedTicketCount} ticket{selectedTicketCount !== 1 ? 's' : ''}</span>{' '}
+              worth{' '}
+              <span className="font-bold text-red-600">₹{selectedRevenue.toLocaleString('en-IN')}</span>.
+              This action cannot be undone.
+            </p>
+
+            {/* Selected batch summary */}
+            <div className="bg-red-50 dark:bg-red-900/20 rounded-xl p-3 mb-5 max-h-36 overflow-y-auto space-y-1">
+              {selectedRows.map((row, i) => (
+                <div key={i} className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-slate-700 dark:text-slate-300 truncate">
+                    {SHIFT_ICONS[row.shift]} {row.workDate} · {row.parchiTypeName}
+                  </span>
+                  <span className="text-red-600 font-bold ml-2 shrink-0">{row.count} tickets</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmOpen(false)}
+                className="btn-secondary flex-1 justify-center"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteSelected}
+                className="flex-1 justify-center flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white font-semibold px-5 py-2.5 rounded-xl transition-all"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+                Yes, Delete
+              </button>
+            </div>
           </div>
         </div>
       )}
