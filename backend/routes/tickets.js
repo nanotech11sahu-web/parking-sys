@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { createBatchTickets, getTickets, getBatchSummary } = require('../controllers/ticketController');
+const { createBatchTickets, getTickets, getBatchSummary,deleteBatchTickets} = require('../controllers/ticketController');
 const { protect, adminOnly } = require('../middleware/auth');
 
 
